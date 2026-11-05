@@ -1,0 +1,993 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum RoleName {
+  SUPER_ADMIN
+  ADMIN
+  DEPT_AUDITOR
+  MANAGER
+  OFFICER
+  FIELD_STAFF
+  CASUAL_SEASONAL
+  EXTERNAL_GUEST
+  SYSTEM_DATA_COMPLIANCE
+}
+
+enum Action {
+  VIEW
+  UPLOAD
+  EDIT
+  APPROVE
+  EXPORT
+  MANAGE_USERS
+  AUDIT
+}
+
+enum Confidentiality {
+  L1
+  L2
+  L3
+  L4
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum DocStatus {
+  DRAFT
+  IN_REVIEW
+  APPROVED
+  CHANGES_REQUESTED
+  PUBLISHED
+  REVISED
+  ARCHIVED
+}
+
+enum AuditOutcome {
+  SUCCESS
+  DENIED
+  FAILED
+}
+
+// B3: task + workflow-engine state machines (blueprint §5/§6)
+enum TaskStatus {
+  OPEN
+  IN_PROGRESS
+  SUBMITTED
+  REVISION_REQUESTED
+  COMPLETED
+  CANCELLED
+  ON_HOLD
+  BLOCKED
+}
+
+enum WfStatus {
+  IN_PROGRESS
+  REVISION_REQUESTED
+  COMPLETED
+  CANCELLED
+  REJECTED
+}
+
+enum ApprovalDecision {
+  APPROVED
+  RETURNED
+  REJECTED
+  DELEGATED
+}
+
+model Role {
+  id          String   @id @default(cuid())
+  name        RoleName @unique
+  description String?
+  users       User[]
+}
+
+model User {
+  id                 String                 @id @default(cuid())
+  email              String                 @unique
+  name               String
+  passwordHash       String?
+  supabaseAuthUserId String? @unique
+  passwordSetAt      DateTime?
+  mustChangePassword Boolean                @default(false)
+  status             UserStatus             @default(ACTIVE)
+  roleId             String
+  role               Role                   @relation(fields: [roleId], references: [id])
+  memberships        DepartmentMembership[]
+  grants             DelegationGrant[]      @relation("GrantGrantee")
+  grantsMade         DelegationGrant[]      @relation("GrantGrantor")
+  sessions           Session[]
+  passwordSetupTokens PasswordSetupToken[]
+  documents          Document[]
+  docVersions        DocumentVersion[]
+  auditEvents        AuditEvent[]
+  notifications      Notification[]
+  tasksAssigned      Task[]                 @relation("TaskAssignee")
+  tasksReviewing     Task[]                 @relation("TaskReviewer")
+  tasksCreated       Task[]                 @relation("TaskCreator")
+  approvalsMade      ApprovalAction[]
+  workflowsStarted   WorkflowInstance[]     @relation("WfRequester")
+  hrProfile          Employee?              @relation("EmployeeAccount")
+  hrReports          Employee[]             @relation("EmployeeManager")
+  techReported       TechItem[]             @relation("TechReporter")
+  techRequestedFor   TechItem[]             @relation("TechRequestedFor")
+  techAssigned       TechItem[]             @relation("TechAssignee")
+  techAssignedByMe   TechItem[]             @relation("TechAssigner")
+  techComments       TechComment[]
+  techWatching       TechWatcher[]
+  assetsHeld         Asset[]                @relation("AssetCustodian")
+  licencesOwned      Licence[]              @relation("LicenceOwner")
+  licenceSeats       LicenceSeat[]
+  createdAt          DateTime               @default(now())
+  updatedAt          DateTime               @updatedAt
+}
+
+model Department {
+  id          String                 @id @default(cuid())
+  number      Int                    @unique
+  name        String                 @unique
+  slug        String                 @unique
+  accentColor String
+  active      Boolean                @default(true)
+  memberships DepartmentMembership[]
+  grants      DelegationGrant[]
+  documents   Document[]
+  tasks       Task[]
+  auditEvents AuditEvent[]
+  positions   Position[]
+  employees   Employee[]
+  createdAt   DateTime               @default(now())
+  updatedAt   DateTime               @updatedAt
+}
+
+model DepartmentMembership {
+  id           String     @id @default(cuid())
+  userId       String
+  departmentId String
+  addedById    String?
+  user         User       @relation(fields: [userId], references: [id])
+  department   Department @relation(fields: [departmentId], references: [id])
+  createdAt    DateTime   @default(now())
+
+  @@unique([userId, departmentId])
+}
+
+// Catalog of possible actions. `delegable` caps what Admins may pass on (FR-03).
+model Permission {
+  id        String  @id @default(cuid())
+  action    Action  @unique
+  delegable Boolean @default(false)
+}
+
+model DelegationGrant {
+  id              String           @id @default(cuid())
+  userId          String
+  departmentId    String
+  action          Action
+  // B2: named L4 access marker (ARCHITECTURE: L4 = dept grant + explicit named row)
+  confidentiality Confidentiality?
+  grantedById     String
+  reason          String
+  expiresAt       DateTime?
+  revokedAt       DateTime?
+  revokedById     String?
+  user            User             @relation("GrantGrantee", fields: [userId], references: [id])
+  department      Department       @relation(fields: [departmentId], references: [id])
+  grantedBy       User             @relation("GrantGrantor", fields: [grantedById], references: [id])
+  createdAt       DateTime         @default(now())
+
+  @@index([userId, departmentId])
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  expiresAt DateTime
+  userAgent String?
+  user      User     @relation(fields: [userId], references: [id])
+  createdAt DateTime @default(now())
+}
+
+model Document {
+  id              String            @id @default(cuid())
+  title           String
+  departmentId    String
+  confidentiality Confidentiality   @default(L2)
+  status          DocStatus         @default(DRAFT)
+  currentVersion  Int               @default(0)
+  createdById     String
+  department      Department        @relation(fields: [departmentId], references: [id])
+  createdBy       User              @relation(fields: [createdById], references: [id])
+  versions        DocumentVersion[]
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  hrLetters       GeneratedLetter[]
+  hrDocuments     HrDocument[]
+  techDocument    TechDocument?
+  companyPolicies CompanyPolicy[]
+
+  @@index([departmentId, status])
+}
+
+model DocumentVersion {
+  id          String   @id @default(cuid())
+  documentId  String
+  version     Int
+  storagePath String
+  mimeType    String
+  sizeBytes   Int
+  changeNote  String?
+  createdById String
+  document    Document @relation(fields: [documentId], references: [id])
+  createdBy   User     @relation(fields: [createdById], references: [id])
+  createdAt   DateTime @default(now())
+
+  @@unique([documentId, version])
+}
+
+model WorkflowDefinition {
+  id        String             @id @default(cuid())
+  key       String             @unique
+  name      String
+  wave      Int                @default(1)
+  slaDays   Int
+  steps     Json
+  instances WorkflowInstance[]
+}
+
+model WorkflowInstance {
+  id           String             @id @default(cuid())
+  definitionId String
+  definition   WorkflowDefinition @relation(fields: [definitionId], references: [id])
+  requesterId  String
+  requester    User               @relation("WfRequester", fields: [requesterId], references: [id])
+  title        String
+  // DoA routing input; null for non-money workflows (leave, document, access)
+  amount       Decimal?           @db.Decimal(18, 2)
+  // linkage into the record the approval is about ("Task", "Document", …)
+  relatedType  String?
+  relatedId    String?
+  status       WfStatus           @default(IN_PROGRESS)
+  currentStep  Int                @default(0)
+  dueAt        DateTime?
+  remindedAt   DateTime? // scan idempotence stamps, same pattern as Task
+  escalatedAt  DateTime?
+  approvals    ApprovalAction[]
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+
+  @@index([requesterId, status])
+  @@index([status, dueAt])
+}
+
+model ApprovalAction {
+  id         String           @id @default(cuid())
+  instanceId String
+  stepIndex  Int
+  decision   ApprovalDecision
+  actorId    String?
+  comment    String?
+  decidedAt  DateTime         @default(now())
+  instance   WorkflowInstance @relation(fields: [instanceId], references: [id])
+  actor      User?            @relation(fields: [actorId], references: [id])
+}
+
+model Task {
+  id            String     @id @default(cuid())
+  title         String
+  // evidence / instruction / result note, like DocumentVersion.changeNote
+  note          String?
+  status        TaskStatus @default(OPEN)
+  dueAt         DateTime?
+  assigneeId    String?
+  reviewerId    String?
+  createdById   String
+  departmentId  String?
+  blockedReason String?
+  closedAt      DateTime?
+  remindedAt    DateTime? // stamp once at 50% of time-to-due — scan idempotence marker
+  escalatedAt   DateTime? // stamp once past due
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  assignee   User?       @relation("TaskAssignee", fields: [assigneeId], references: [id])
+  reviewer   User?       @relation("TaskReviewer", fields: [reviewerId], references: [id])
+  createdBy  User        @relation("TaskCreator", fields: [createdById], references: [id])
+  department Department? @relation(fields: [departmentId], references: [id])
+
+  @@index([assigneeId, status])
+  @@index([reviewerId, status])
+  @@index([dueAt])
+}
+
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  title     String
+  body      String?
+  link      String? // deep-link the user can open from the bell
+  readAt    DateTime?
+  user      User      @relation(fields: [userId], references: [id])
+  createdAt DateTime  @default(now())
+}
+
+// Append-only: only create/createMany are ever used (see RULES.MD).
+model AuditEvent {
+  id           String       @id @default(cuid())
+  actorId      String?
+  actorEmail   String?
+  action       String
+  targetType   String
+  targetId     String?
+  departmentId String?
+  outcome      AuditOutcome @default(SUCCESS)
+  detail       Json?
+  createdAt    DateTime     @default(now())
+  actor        User?        @relation(fields: [actorId], references: [id])
+  department   Department?  @relation(fields: [departmentId], references: [id])
+
+  @@index([createdAt])
+  @@index([departmentId, createdAt])
+  @@index([actorId, createdAt])
+}
+
+model IntegrationConnection {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  kind      String
+  status    String   @default("PLANNED")
+  config    Json?
+  createdAt DateTime @default(now())
+}
+
+// ───────────── HR module (M-Desk HR Module Functional Requirements v2.0) ─────────────
+
+enum EmploymentType {
+  INTERN
+  PERMANENT
+  CONTRACT
+}
+
+// Onboarding status model (§4) followed by the post-activation lifecycle (§9).
+enum EmployeeStage {
+  DRAFT
+  PENDING_REVIEW
+  PENDING_APPROVAL
+  APPROVED
+  SENT
+  AWAITING_ACCEPTANCE
+  ACCEPTED
+  ONBOARDING_IN_PROGRESS
+  ACTIVE
+  REJECTED
+  DECLINED
+  EXPIRED
+  WITHDRAWN
+  ON_HOLD
+  SUSPENDED
+  EXITED
+}
+
+enum LetterType {
+  OFFER
+  APPOINTMENT
+  INTERNSHIP_OFFER
+  EMPLOYMENT_AGREEMENT
+  NDA
+  JOINING
+  POLICY_ACK
+  EXPERIENCE
+  INTERNSHIP_COMPLETION
+  RELIEVING
+}
+
+enum TemplateStatus {
+  DRAFT
+  APPROVED
+  RETIRED
+}
+
+enum LetterStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+  SENT
+  ACCEPTED
+  DECLINED
+  WITHDRAWN
+  SUPERSEDED
+}
+
+// Email status model (§7): SENT_TO_PROVIDER is never presented as delivered.
+enum EmailStatus {
+  QUEUED
+  SENDING
+  SENT_TO_PROVIDER
+  DELIVERED
+  BOUNCED
+  FAILED
+  RETRY_SCHEDULED
+}
+
+enum Qualification {
+  TENTH
+  TWELFTH
+  GRADUATION
+  POST_GRADUATION
+}
+
+enum HrDocCategory {
+  IDENTITY
+  HIRING
+  ONBOARDING
+  PERFORMANCE_TRAINING
+  ATTENDANCE_LEAVE
+  EXIT
+}
+
+enum VerificationStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+enum CalendarStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum HolidayCategory {
+  PUBLIC
+  COMPANY
+  OPTIONAL
+  SHUTDOWN
+}
+
+enum LeaveStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  HALF_DAY
+  ON_LEAVE
+  HOLIDAY
+}
+
+model Position {
+  id           String     @id @default(cuid())
+  title        String
+  departmentId String
+  grade        String?
+  active       Boolean    @default(true)
+  department   Department @relation(fields: [departmentId], references: [id])
+  employees    Employee[]
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  @@unique([title, departmentId])
+}
+
+model Employee {
+  id                 String             @id @default(cuid())
+  seq                Int                @unique @default(autoincrement())
+  code               String?            @unique // INT-0001 / EMP-0001 / CON-0001
+  userId             String?            @unique
+  name               String
+  email              String
+  phone              String?
+  emergencyContact   String? // name and number, free text
+  positionId         String
+  departmentId       String
+  managerId          String?
+  location           String
+  employmentType     EmploymentType
+  stage              EmployeeStage      @default(DRAFT)
+  joiningDate        DateTime
+  endDate            DateTime? // internship / contract end
+  probationMonths    Int?
+  compensation       Decimal?           @db.Decimal(14, 2) // monthly stipend or annual salary
+  workMode           String?
+  mentor             String?
+  qualification      Qualification?
+  // Personal details (new-employee step 1).
+  fatherName         String?
+  dateOfBirth        DateTime?
+  gender             String?
+  maritalStatus      String?
+  personalEmail      String?
+  remarks            String?
+  // Payroll set-up (step 3). Statutory numbers are restricted like Aadhaar / PAN.
+  bankBranch         String?
+  salaryStructure    String?
+  payGrade           String?
+  paymentFrequency   String?
+  payrollStartMonth  String? // YYYY-MM
+  costCentre         String?
+  pfApplicable       Boolean?
+  esiApplicable      Boolean?
+  ptApplicable       Boolean?
+  uanNumber          String?
+  pfNumber           String?
+  esiNumber          String?
+  // Restricted identity and payroll details (§6): shown masked without an APPROVE grant.
+  aadhaarNumber      String?
+  panNumber          String?
+  bankAccountName    String?
+  bankName           String?
+  bankAccountNumber  String?
+  bankIfsc           String?
+  acceptanceDeadline DateTime?
+  remindedAt         DateTime? // scan idempotence stamps
+  endAlertedAt       DateTime?
+  createdById        String
+  user               User?              @relation("EmployeeAccount", fields: [userId], references: [id])
+  manager            User?              @relation("EmployeeManager", fields: [managerId], references: [id])
+  position           Position           @relation(fields: [positionId], references: [id])
+  department         Department         @relation(fields: [departmentId], references: [id])
+  tasks              OnboardingTask[]
+  letters            GeneratedLetter[]
+  documents          HrDocument[]
+  emails             EmailLog[]
+  leaveRequests      LeaveRequest[]
+  attendance         AttendanceRecord[]
+  policyAssignments  PolicyAssignment[]
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  @@index([stage])
+  @@index([employmentType, stage])
+}
+
+model OnboardingTask {
+  id            String    @id @default(cuid())
+  employeeId    String
+  title         String
+  owner         String // HR / Manager / Employee / IT
+  mandatory     Boolean   @default(true)
+  dueAt         DateTime?
+  done          Boolean   @default(false)
+  completedAt   DateTime?
+  completedById String?
+  employee      Employee  @relation(fields: [employeeId], references: [id])
+  createdAt     DateTime  @default(now())
+
+  @@index([employeeId])
+}
+
+model LetterTemplate {
+  id             String            @id @default(cuid())
+  type           LetterType
+  name           String
+  employmentType EmploymentType? // null = any type
+  version        Int
+  status         TemplateStatus    @default(DRAFT)
+  body           String
+  createdById    String
+  approvedById   String?
+  approvedAt     DateTime?
+  letters        GeneratedLetter[]
+  createdAt      DateTime          @default(now())
+
+  @@unique([type, employmentType, version])
+}
+
+model GeneratedLetter {
+  id             String         @id @default(cuid())
+  reference      String         @unique
+  employeeId     String
+  templateId     String
+  type           LetterType
+  version        Int
+  status         LetterStatus   @default(DRAFT)
+  fields         Json // term snapshot used to render
+  documentId     String?
+  createdById    String
+  approvedById   String?
+  approvedAt     DateTime?
+  sentAt         DateTime?
+  respondedAt    DateTime?
+  sendOnApproval Boolean        @default(false) // "Send now" chosen: issue as soon as it is approved
+  employee       Employee       @relation(fields: [employeeId], references: [id])
+  template       LetterTemplate @relation(fields: [templateId], references: [id])
+  document       Document?      @relation(fields: [documentId], references: [id])
+  createdAt      DateTime       @default(now())
+
+  @@index([employeeId, type])
+}
+
+model EmailLog {
+  id            String      @id @default(cuid())
+  employeeId    String?
+  relatedType   String
+  relatedId     String?
+  recipient     String
+  subject       String
+  body          String
+  status        EmailStatus @default(QUEUED)
+  provider      String
+  providerId    String?
+  attempts      Int         @default(0)
+  lastError     String?
+  nextAttemptAt DateTime?
+  sentAt        DateTime?
+  deliveredAt   DateTime?
+  createdById   String?
+  employee      Employee?   @relation(fields: [employeeId], references: [id])
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  @@index([status])
+}
+
+model HrDocument {
+  id           String             @id @default(cuid())
+  employeeId   String
+  documentId   String
+  category     HrDocCategory
+  label        String
+  verification VerificationStatus @default(PENDING)
+  expiresAt    DateTime?
+  verifiedById String?
+  verifiedAt   DateTime?
+  employee     Employee           @relation(fields: [employeeId], references: [id])
+  document     Document           @relation(fields: [documentId], references: [id])
+  createdAt    DateTime           @default(now())
+
+  @@index([employeeId])
+}
+
+model HolidayCalendar {
+  id             String          @id @default(cuid())
+  name           String
+  employmentType EmploymentType? // null = the company calendar that applies to everyone
+  location       String?
+  year           Int
+  status         CalendarStatus  @default(DRAFT)
+  effectiveFrom  DateTime
+  holidays       Holiday[]
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+}
+
+model Holiday {
+  id         String          @id @default(cuid())
+  calendarId String
+  name       String
+  date       DateTime        @db.Date
+  endDate    DateTime?       @db.Date
+  category   HolidayCategory
+  calendar   HolidayCalendar @relation(fields: [calendarId], references: [id])
+  createdAt  DateTime        @default(now())
+
+  @@index([calendarId, date])
+}
+
+model LeavePolicy {
+  id             String         @id @default(cuid())
+  name           String
+  employmentType EmploymentType
+  location       String?
+  effectiveFrom  DateTime
+  effectiveTo    DateTime?
+  allowances     Json // [{ "type": "Casual", "days": 12 }, …]
+  approval       String // who decides
+  active         Boolean        @default(true)
+  requests       LeaveRequest[]
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+}
+
+model LeaveRequest {
+  id          String       @id @default(cuid())
+  employeeId  String
+  policyId    String?
+  leaveType   String
+  startDate   DateTime     @db.Date
+  endDate     DateTime     @db.Date
+  days        Decimal      @db.Decimal(5, 1)
+  reason      String?
+  status      LeaveStatus  @default(PENDING)
+  approverId  String?
+  decidedAt   DateTime?
+  comment     String?
+  createdById String
+  employee    Employee     @relation(fields: [employeeId], references: [id])
+  policy      LeavePolicy? @relation(fields: [policyId], references: [id])
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@index([employeeId, status])
+}
+
+model AttendanceRecord {
+  id           String           @id @default(cuid())
+  employeeId   String
+  date         DateTime         @db.Date
+  status       AttendanceStatus
+  note         String?
+  recordedById String
+  employee     Employee         @relation(fields: [employeeId], references: [id])
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  @@unique([employeeId, date])
+}
+
+// ───────────── Technology & MIS (docs/TECH-MIS-BLUEPRINT-v1.0.md) ─────────────
+// One work-item model for every trackable thing (§4.1). `status` is validated per
+// type by the state machine in lib/tech-catalogue.ts; `details` holds the
+// type-specific fields (zod-validated in lib/tech-validation.ts).
+
+enum TechItemType {
+  INCIDENT
+  SERVICE_REQUEST
+  ACCESS_REQUEST
+  CHANGE
+  PROBLEM
+  BUG
+  FEATURE
+  STORY
+  EPIC
+  SUBTASK
+  MIS_REQUEST
+  DQ_ISSUE
+  SECURITY_INCIDENT
+}
+
+enum TechPriority {
+  P1
+  P2
+  P3
+  P4
+}
+
+model TechItem {
+  id              String          @id @default(cuid())
+  key             String          @unique // TM-1042
+  type            TechItemType
+  title           String
+  description     String?
+  status          String
+  priority        TechPriority    @default(P3)
+  impact          String? // ORG | TEAM | USER
+  urgency         String? // HIGH | MEDIUM | LOW
+  component       String // lane: SD | IAM | INF | APP | MIS | DATA | SEC | PROC
+  category        String?
+  subcategory     String?
+  confidentiality Confidentiality @default(L2)
+  reporterId      String
+  requestedForId  String?
+  assigneeId      String?
+  parentId        String? // epic / sub-task hierarchy
+  details         Json?
+  labels          String[]
+  storyPoints     Int?
+  dueAt           DateTime?
+  responseDueAt   DateTime?
+  resolveDueAt    DateTime? // effective due: pushed out by every SLA pause
+  slaPausedAt     DateTime?
+  slaPausedMs     Int             @default(0)
+  respondedAt     DateTime?
+  resolvedAt      DateTime?
+  closedAt        DateTime?
+  remindedAt      DateTime? // 50% stamp — same idempotence as Task
+  warnedAt        DateTime? // 75%
+  escalatedAt     DateTime? // 100%
+  reassignCount   Int             @default(0)
+  assignedById    String? // who made the current assignment: the Super Admin or Tech Head dispatches
+  assignedAt      DateTime?
+  assignNote      String? // their instructions — which part of the work is the assignee's
+  resolutionCode  String?
+  resolutionNote  String?
+  csat            Int?
+  csatComment     String?
+  source          String          @default("PORTAL")
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  reporter     User          @relation("TechReporter", fields: [reporterId], references: [id])
+  requestedFor User?         @relation("TechRequestedFor", fields: [requestedForId], references: [id])
+  assignee     User?          @relation("TechAssignee", fields: [assigneeId], references: [id])
+  assignedBy   User?          @relation("TechAssigner", fields: [assignedById], references: [id])
+  parent       TechItem?      @relation("TechHierarchy", fields: [parentId], references: [id])
+  children     TechItem[]     @relation("TechHierarchy")
+  comments     TechComment[]
+  watchers     TechWatcher[]
+  linksFrom    TechLink[]     @relation("TechLinkFrom")
+  linksTo      TechLink[]     @relation("TechLinkTo")
+  documents    TechDocument[]
+
+  @@index([assigneeId, status])
+  @@index([type, status])
+  @@index([resolveDueAt])
+  @@index([component, status])
+  @@index([reporterId])
+}
+
+model TechComment {
+  id        String   @id @default(cuid())
+  itemId    String
+  authorId  String
+  body      String
+  internal  Boolean  @default(false) // internal notes are never shown to the requester
+  item      TechItem @relation(fields: [itemId], references: [id])
+  author    User     @relation(fields: [authorId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@index([itemId, createdAt])
+}
+
+model TechLink {
+  id        String   @id @default(cuid())
+  fromId    String
+  toId      String
+  kind      String // blocks | relates | duplicates | caused_by
+  from      TechItem @relation("TechLinkFrom", fields: [fromId], references: [id])
+  to        TechItem @relation("TechLinkTo", fields: [toId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@unique([fromId, toId, kind])
+}
+
+model TechWatcher {
+  itemId String
+  userId String
+  item   TechItem @relation(fields: [itemId], references: [id])
+  user   User     @relation(fields: [userId], references: [id])
+
+  @@id([itemId, userId])
+}
+
+// Tech & MIS files live in the controlled document library (Technology & MIS
+// department) so storage, versioning, audited downloads and the L1–L4 ladder are
+// shared — same pattern as HrDocument. This row adds the category and, for an
+// attachment, the work item it belongs to.
+model TechDocument {
+  id         String    @id @default(cuid())
+  documentId String    @unique
+  itemId     String? // attached to a work item; null = department library (SOP, runbook, contract…)
+  category   String // TECH_DOC_CATEGORIES
+  document   Document  @relation(fields: [documentId], references: [id])
+  item       TechItem? @relation(fields: [itemId], references: [id])
+  createdAt  DateTime  @default(now())
+
+  @@index([itemId])
+}
+
+// Gap-free key numbering per prefix (§4.2).
+model TechSequence {
+  prefix String @id
+  next   Int    @default(1)
+}
+
+// IT asset register (§5 WF-TM-08). Custody history lives in AssetEvent, append-only.
+model Asset {
+  id            String       @id @default(cuid())
+  tag           String       @unique
+  kind          String
+  make          String?
+  model         String?
+  serial        String?
+  status        String       @default("IN_STOCK") // IN_STOCK | IN_USE | REPAIR | RETIRED | DISPOSED
+  custodianId   String?
+  location      String?
+  purchasedAt   DateTime?
+  cost          Decimal?     @db.Decimal(14, 2)
+  warrantyUntil DateTime?
+  custodian     User?        @relation("AssetCustodian", fields: [custodianId], references: [id])
+  events        AssetEvent[]
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  @@index([status])
+}
+
+model AssetEvent {
+  id         String   @id @default(cuid())
+  assetId    String
+  kind       String // RECEIVE | ISSUE | RETURN | REPAIR | RETIRE | DISPOSE
+  fromUserId String?
+  toUserId   String?
+  note       String?
+  actorId    String
+  asset      Asset    @relation(fields: [assetId], references: [id])
+  createdAt  DateTime @default(now())
+
+  @@index([assetId, createdAt])
+}
+
+// Licences & subscriptions (§5 WF-TM-09).
+model Licence {
+  id            String        @id @default(cuid())
+  product       String
+  vendor        String?
+  seats         Int
+  costPerPeriod Decimal       @db.Decimal(14, 2)
+  period        String // MONTHLY | ANNUAL
+  renewsAt      DateTime
+  ownerId       String
+  autoRenew     Boolean       @default(false)
+  alertedDays   Int? // smallest renewal alert threshold (60/30/7) already sent — scan idempotence
+  owner         User          @relation("LicenceOwner", fields: [ownerId], references: [id])
+  assignments   LicenceSeat[]
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+}
+
+model LicenceSeat {
+  id         String    @id @default(cuid())
+  licenceId  String
+  userId     String
+  assignedAt DateTime  @default(now())
+  revokedAt  DateTime?
+  licence    Licence   @relation(fields: [licenceId], references: [id])
+  user       User      @relation(fields: [userId], references: [id])
+
+  @@index([licenceId, revokedAt])
+}
+
+// Company policies employees must read and acknowledge (new-employee step 4).
+// Not leave rules — those are LeavePolicy.
+model CompanyPolicy {
+  id          String             @id @default(cuid())
+  title       String
+  summary     String
+  version     String             @default("v1.0")
+  body        String
+  documentId  String? // optional PDF in the document library (L1, everyone can read)
+  mandatory   Boolean            @default(true)
+  active      Boolean            @default(true)
+  publishedAt DateTime           @default(now())
+  createdById String
+  document    Document?          @relation(fields: [documentId], references: [id])
+  assignments PolicyAssignment[]
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  @@index([active])
+}
+
+model PolicyAssignment {
+  id               String        @id @default(cuid())
+  policyId         String
+  employeeId       String
+  assignedById     String
+  acknowledgedAt   DateTime?
+  acknowledgedById String? // the employee, or HR recording a signed paper copy
+  policy           CompanyPolicy @relation(fields: [policyId], references: [id])
+  employee         Employee      @relation(fields: [employeeId], references: [id])
+  createdAt        DateTime      @default(now())
+
+  @@unique([policyId, employeeId])
+  @@index([employeeId])
+}
+
+model PasswordSetupToken {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  userId    String
+  expiresAt DateTime
+  usedAt    DateTime?
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@index([userId, expiresAt])
+}
+
