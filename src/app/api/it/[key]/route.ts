@@ -12,7 +12,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ key: st
   try {
     const session = await requireSession();
     const { key } = await params;
-    const { item, comments, transitions } = await itemDetail(session, key.toUpperCase());
+    const { item, access, comments, transitions } = await itemDetail(session, key.toUpperCase());
     const mine = isRequester(session.user.id, item);
     const canRate = mine && !!item.resolvedAt && item.csat === null && ["RESOLVED", "CLOSED"].includes(item.status);
     return ok({
@@ -21,6 +21,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ key: st
       requesterMoves: mine ? transitions.filter((t) => ["CLOSED", "REOPENED"].includes(t.to)) : [],
       mine,
       canRate,
+      member: access.member,
     });
   } catch (e) {
     return errorResponse(e);

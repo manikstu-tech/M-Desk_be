@@ -18,6 +18,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ key: st
     const [attachments, canUpload] = await Promise.all([itemDocuments(session, detail.item.id), canUploadTech(session, access)]);
     return ok({
       ...detail,
+      access,
       attachments,
       canUpload,
       canAssign: canAssign(access),
