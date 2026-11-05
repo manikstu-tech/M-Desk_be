@@ -70,7 +70,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
       ]);
 
     const employee: Record<string, unknown> = { ...emp };
-    if (!canApprove) for (const f of RESTRICTED) employee[f] = maskId(emp[f]);
+    if (!canApprove) for (const f of RESTRICTED) employee[f] = emp[f] ? maskId(emp[f]) : null;
 
     return ok({
       employee,
