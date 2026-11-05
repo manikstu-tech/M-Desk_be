@@ -1,3 +1,6 @@
+import { Action } from "@prisma/client";
+import { db } from "@/lib/db";
+import { hrCan, requireHr } from "@/lib/hr";
 import { requireSession } from "@/lib/authorize";
 import { checkContentLength } from "@/lib/documents";
 import { publishPolicy } from "@/lib/hr-policies";
@@ -20,6 +23,25 @@ export async function POST(req: Request) {
     const file = fd.get("file");
     const policy = await publishPolicy(session, input, file instanceof File && file.size > 0 ? file : undefined);
     return ok({ id: policy.id }, { status: 201 });
+  } catch (e) {
+    return errorResponse(e);
+  }
+}
+
+/** GET /api/hr/company-policies: every company policy with its acknowledgement dates. */
+export async function GET() {
+  try {
+    const session = await requireSession();
+    await requireHr(session, Action.VIEW);
+    const [policies, canEdit, canUpload] = await Promise.all([
+      db.companyPolicy.findMany({
+        orderBy: [{ active: "desc" }, { title: "asc" }],
+        include: { assignments: { select: { acknowledgedAt: true } } },
+      }),
+      hrCan(session, Action.EDIT),
+      hrCan(session, Action.UPLOAD),
+    ]);
+    return ok({ policies, canEdit, canUpload });
   } catch (e) {
     return errorResponse(e);
   }
