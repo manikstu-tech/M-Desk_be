@@ -107,7 +107,7 @@ describe("attendance import", () => {
     expect(ws.getRow(1).values).toEqual([undefined, "Employee ID", "Employee name", "Date", "Status", "Note"]);
     expect(ws.getCell("A2").value).toBe("EMP-0001");
     expect(ws.getCell("D2").dataValidation?.type).toBe("list");
-    const r = await importAttendance(session, new File([buf], "filled.xlsx"));
+    const r = await importAttendance(session, new File([new Uint8Array(buf)], "filled.xlsx"));
     expect(r).toMatchObject({ saved: true, rows: 2 });
   });
 });
