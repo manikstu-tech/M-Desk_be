@@ -462,6 +462,13 @@ enum LeaveStatus {
   CANCELLED
 }
 
+enum CorrectionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
 enum AttendanceStatus {
   PRESENT
   ABSENT
@@ -547,6 +554,7 @@ model Employee {
   emails             EmailLog[]
   leaveRequests      LeaveRequest[]
   attendance         AttendanceRecord[]
+  attendanceCorrections AttendanceCorrection[]
   policyAssignments  PolicyAssignment[]
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt
@@ -991,3 +999,25 @@ model PasswordSetupToken {
   @@index([userId, expiresAt])
 }
 
+/// Employee request to fix one day's attendance (missed punch, wrong status).
+/// Decided by the employee's reporting manager or HR (EDIT); approval updates the
+/// AttendanceRecord as an audited correction.
+model AttendanceCorrection {
+  id              String            @id @default(cuid())
+  employeeId      String
+  date            DateTime          @db.Date
+  requestedStatus AttendanceStatus
+  previousStatus  AttendanceStatus?
+  reason          String
+  status          CorrectionStatus  @default(PENDING)
+  requestedById   String
+  decidedById     String?
+  decidedAt       DateTime?
+  decisionNote    String?
+  employee        Employee          @relation(fields: [employeeId], references: [id])
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  @@index([employeeId, date])
+  @@index([status])
+}

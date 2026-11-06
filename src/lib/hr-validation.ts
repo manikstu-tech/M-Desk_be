@@ -229,6 +229,17 @@ export const attendanceSchema = z.object({
     .max(1000),
 });
 
+export const correctionRequestSchema = z.object({
+  date: day,
+  status: z.nativeEnum(AttendanceStatus),
+  reason: z.string().trim().min(3, "Give a reason").max(300),
+});
+
+export const correctionDecisionSchema = z.object({
+  action: z.enum(["APPROVE", "REJECT", "CANCEL"]),
+  note: optText(300),
+});
+
 // Company policies (new-employee step 4); not leave rules.
 export const companyPolicySchema = z.object({
   title: z.string().trim().min(3).max(120),
