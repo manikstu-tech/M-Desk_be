@@ -1,4 +1,4 @@
-import { Action, type AttendanceStatus, type EmploymentType, type HolidayCategory } from "@prisma/client";
+import { Action, RoleName, type AttendanceStatus, type EmploymentType, type HolidayCategory } from "@prisma/client";
 import { db } from "./db";
 import type { Tx } from "./audit";
 import type { AuthSession } from "./authorize";
@@ -276,7 +276,7 @@ export async function submitLeave(
       await notifyUsers(tx, [emp.managerId], {
         title: `Leave request from ${emp.name}`,
         body: `${input.leaveType}, ${days} day(s) from ${dayKey(start)}`,
-        link: hrHref("attendance-leave"),
+        link: "/my-hr#approvals",
       });
     }
     return req;
@@ -284,6 +284,30 @@ export async function submitLeave(
 }
 
 /** Line manager or an HR approver decides; the requester or HR may cancel. */
+/** Pending leave this user may decide: their own team as reporting manager, or everyone with HR APPROVE. Never their own. */
+export async function leaveToDecide(session: AuthSession) {
+  const isHr = session.user.role.name === RoleName.SUPER_ADMIN || (await hrCan(session, Action.APPROVE));
+  return db.leaveRequest.findMany({
+    where: {
+      status: "PENDING",
+      // OR keeps employees without a login (userId null), which a plain NOT would drop.
+      employee: { ...(isHr ? {} : { managerId: session.user.id }), OR: [{ userId: null }, { userId: { not: session.user.id } }] },
+    },
+    orderBy: { startDate: "asc" },
+    take: 100,
+    select: {
+      id: true,
+      leaveType: true,
+      startDate: true,
+      endDate: true,
+      days: true,
+      reason: true,
+      createdAt: true,
+      employee: { select: { id: true, code: true, name: true } },
+    },
+  });
+}
+
 export async function decideLeave(
   session: AuthSession,
   id: string,
