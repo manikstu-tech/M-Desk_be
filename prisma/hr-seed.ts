@@ -121,36 +121,22 @@ const TEMPLATES: { type: LetterType; employmentType: EmploymentType | null; name
   },
 ];
 
-const POLICIES: { employmentType: EmploymentType; name: string; approval: string; allowances: { type: string; days: number }[] }[] = [
-  {
-    employmentType: "PERMANENT",
-    name: "Permanent staff leave policy (sample)",
-    approval: "Line manager; HR for exceptions",
-    allowances: [
-      { type: "Casual", days: 12 },
-      { type: "Sick", days: 7 },
-      { type: "Earned", days: 15 },
-    ],
-  },
-  {
-    employmentType: "INTERN",
-    name: "Internship leave policy (sample)",
-    approval: "Mentor / line manager",
-    allowances: [
-      { type: "Casual", days: 6 },
-      { type: "Sick", days: 3 },
-    ],
-  },
-  {
-    employmentType: "CONTRACT",
-    name: "Contract staff leave policy (sample)",
-    approval: "Line manager",
-    allowances: [
-      { type: "Casual", days: 8 },
-      { type: "Sick", days: 5 },
-    ],
-  },
+// Company decision (HR Data doc): same entitlement for interns and permanent staff, no carry-forward,
+// half-day leave allowed. Approval is manager first, then HR.
+const COMPANY_LEAVE = [
+  { type: "Earned", days: 12 },
+  { type: "Sick", days: 10 },
+  { type: "Casual", days: 8 },
+  { type: "Optional Holiday", days: 2 },
 ];
+const POLICIES: { employmentType: EmploymentType; name: string; approval: string; allowances: { type: string; days: number }[] }[] = (
+  ["PERMANENT", "INTERN", "CONTRACT"] as EmploymentType[]
+).map((employmentType) => ({
+  employmentType,
+  name: "Company leave policy",
+  approval: "Line manager, then HR",
+  allowances: COMPANY_LEAVE,
+}));
 
 // National holidays are fixed dates; the company days and the year-end break are samples.
 function holidays(year: number) {

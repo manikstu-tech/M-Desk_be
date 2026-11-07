@@ -93,7 +93,11 @@ describe("HR catalogue rules", () => {
       "Letters & Documents",
       "Attendance & Leave",
       "Holiday Calendar",
+      "KRAs & Performance",
+      "Policies & Compliance",
+      "Training & Learning",
       "Reports",
+      "Analytics",
       "Settings & Audit",
     ]);
     // Sent / awaiting / accepted / expired are only reachable through letters and the scan.
@@ -104,8 +108,8 @@ describe("HR catalogue rules", () => {
   });
 
   it("separates interns from permanent staff", () => {
-    expect(employeeCode("INTERN", 7)).toBe("INT-0007");
-    expect(employeeCode("PERMANENT", 123)).toBe("EMP-0123");
+    expect(employeeCode("INTERN", 7)).toBe("EA00007");
+    expect(employeeCode("PERMANENT", 123)).toBe("EA00123");
     expect(LETTERS_FOR_TYPE.INTERN).toContain("INTERNSHIP_OFFER");
     expect(LETTERS_FOR_TYPE.INTERN).not.toContain("OFFER");
     expect(LETTERS_FOR_TYPE.PERMANENT).toContain("EMPLOYMENT_AGREEMENT");
@@ -154,11 +158,12 @@ describe("HR catalogue rules", () => {
     expect(perm.text).toContain("{{probation_months}}");
   });
 
-  it("counts working leave days, skipping weekends and holidays", () => {
-    // Fri 6 Nov 2026 → Tue 10 Nov 2026, with Mon 9 Nov a holiday: Fri + Tue = 2
-    expect(countLeaveDays(utc(2026, 11, 6), utc(2026, 11, 10), new Set(["2026-11-09"]))).toBe(2);
+  it("counts working leave days, skipping Sundays and holidays (Saturday is a working day)", () => {
+    // Fri 6 Nov 2026 → Tue 10 Nov 2026, Sun 8 Nov off, Mon 9 Nov a holiday: Fri + Sat + Tue = 3
+    expect(countLeaveDays(utc(2026, 11, 6), utc(2026, 11, 10), new Set(["2026-11-09"]))).toBe(3);
     expect(countLeaveDays(utc(2026, 11, 6), utc(2026, 11, 6), new Set(), true)).toBe(0.5);
-    expect(countLeaveDays(utc(2026, 11, 7), utc(2026, 11, 8), new Set())).toBe(0);
+    expect(countLeaveDays(utc(2026, 11, 7), utc(2026, 11, 8), new Set())).toBe(1);
+    expect(countLeaveDays(utc(2026, 11, 8), utc(2026, 11, 8), new Set())).toBe(0);
   });
 
   it("produces PDFs with only encodable characters", async () => {
@@ -219,7 +224,7 @@ describe("HR end-to-end", () => {
       mentor: "Test Mentor",
     });
     createdEmployeeIds.push(emp.id);
-    expect(emp.code).toMatch(/^INT-\d{4}$/);
+    expect(emp.code).toMatch(/^EA\d{5}$/);
     expect(emp.email).toBe("test.intern@mdesk.test");
     expect(await db.onboardingTask.count({ where: { employeeId: emp.id } })).toBe(CHECKLISTS.INTERN.length);
 
@@ -281,15 +286,15 @@ describe("HR end-to-end", () => {
       employeeId: emp.id,
       leaveType: "Casual",
       startDate: monday,
-      endDate: new Date(monday.getTime() + 6 * DAY), // Mon–Sun → 5 working days
+      endDate: new Date(monday.getTime() + 6 * DAY), // Mon–Sun → 6 working days (Saturday is a working day, only Sunday is off)
     });
-    expect(Number(req.days)).toBe(5);
+    expect(Number(req.days)).toBe(6);
     await expect(
       submitLeave(admin, { employeeId: emp.id, leaveType: "Casual", startDate: monday, endDate: monday }),
     ).rejects.toMatchObject({ status: 409 }); // overlap
     await decideLeave(admin, req.id, "APPROVE");
     const after = (await leaveBalance(emp.id)).rows.find((r) => r.type === "Casual");
-    expect(after?.used).toBe(5);
+    expect(after?.used).toBe(6);
   });
 
   it("records existing employee IDs: entered, edited, unique, audited, and skipped by the generator", async () => {

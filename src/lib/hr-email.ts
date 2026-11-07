@@ -5,14 +5,17 @@ import type { Tx } from "./audit";
 import { notifyUsers } from "./notify";
 import { hrAdminIds, hrAudit, hrDept } from "./hr";
 import { hrHref } from "./hr-catalogue";
+import { sendSmtpEmail } from "./email";
+import { ApiError } from "./validation";
 
-// §7 email sending. The company has not chosen a provider yet (§16), so the
-// default "outbox" provider records every message and its lifecycle without
-// sending anything. A real provider plugs in behind EmailProvider.send and
-// reports delivery/bounce through the same providerEvent path.
+// §7 email sending. HR_EMAIL_PROVIDER picks the provider:
+// - "outbox" (default): records every message and its lifecycle without sending anything.
+// - "smtp": sends through the SMTP account in SMTP_* (the same one as invitation emails),
+//   from HR_EMAIL_FROM when set, otherwise SMTP_FROM.
+// Delivery/bounce reports still come through the providerEvent path.
 
 export const EMAIL_PROVIDER = process.env.HR_EMAIL_PROVIDER?.trim() || "outbox";
-export const EMAIL_FROM = process.env.HR_EMAIL_FROM?.trim() || "hr@m-desk.local";
+export const EMAIL_FROM = process.env.HR_EMAIL_FROM?.trim() || process.env.SMTP_FROM?.trim() || "hr@m-desk.local";
 const MAX_ATTEMPTS = 3;
 const RETRY_MINUTES = 15;
 
@@ -29,8 +32,24 @@ const outbox: EmailProvider = {
   },
 };
 
+const smtp: EmailProvider = {
+  async send(msg) {
+    if (!z.string().email().safeParse(msg.to).success) {
+      throw new PermanentEmailError("Invalid recipient address");
+    }
+    try {
+      return await sendSmtpEmail({ to: msg.to, subject: msg.subject, text: msg.body, from: process.env.HR_EMAIL_FROM?.trim() });
+    } catch (e) {
+      // Missing SMTP settings will not fix themselves on retry.
+      if (e instanceof ApiError && e.code === "SMTP_NOT_CONFIGURED") throw new PermanentEmailError(e.message);
+      throw e;
+    }
+  },
+};
+
 function provider(): EmailProvider {
   if (EMAIL_PROVIDER === "outbox") return outbox;
+  if (EMAIL_PROVIDER === "smtp") return smtp;
   throw new Error(`Email provider "${EMAIL_PROVIDER}" is not configured`);
 }
 

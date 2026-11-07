@@ -39,9 +39,8 @@ function getSmtpConfig() {
   };
 }
 
-export async function sendPasswordSetupEmail(input: PasswordSetupEmailInput) {
-  const config = getSmtpConfig();
-  const transporter = nodemailer.createTransport({
+function smtpTransport(config: ReturnType<typeof getSmtpConfig>) {
+  return nodemailer.createTransport({
     host: config.host,
     port: config.port,
     secure: config.secure,
@@ -51,9 +50,27 @@ export async function sendPasswordSetupEmail(input: PasswordSetupEmailInput) {
     greetingTimeout: 10_000,
     socketTimeout: 20_000,
   });
+}
 
-  await transporter.sendMail({
+export async function sendPasswordSetupEmail(input: PasswordSetupEmailInput) {
+  const config = getSmtpConfig();
+  await smtpTransport(config).sendMail({
     from: config.from,
     ...buildPasswordSetupEmail(input),
   });
+}
+
+/**
+ * Plain-text email through the same SMTP account as the invitation emails.
+ * Returns the SMTP message id. `from` overrides SMTP_FROM (it must be an address the SMTP account may send as).
+ */
+export async function sendSmtpEmail(msg: { to: string; subject: string; text: string; from?: string }): Promise<string> {
+  const config = getSmtpConfig();
+  const info = await smtpTransport(config).sendMail({
+    from: msg.from || config.from,
+    to: msg.to,
+    subject: msg.subject,
+    text: msg.text,
+  });
+  return info.messageId;
 }

@@ -77,7 +77,7 @@ export async function loadHrDashboard(dept: HrDept, f: HrDashboardFilters = {}, 
     }),
     db.attendanceRecord.findMany({
       where: { employee: emp, date: { gte: windowStart, lte: ref } },
-      select: { date: true, status: true },
+      select: { date: true, status: true, employee: { select: { email: true } } },
     }),
     db.generatedLetter.findMany({
       where: { employee: emp },
@@ -91,8 +91,9 @@ export async function loadHrDashboard(dept: HrDept, f: HrDashboardFilters = {}, 
       take: 15,
       select: { id: true, action: true, createdAt: true, actorEmail: true, actor: { select: { name: true } } },
     }),
-    db.employee.count({ where: { ...emp, email: { endsWith: DEMO_DOMAIN } } }),
+    db.employee.count({ where: { ...emp, stage: { in: ["ACTIVE", "SUSPENDED"] }, email: { endsWith: DEMO_DOMAIN } } }),
   ]);
+  const demoAttendance = attendance.filter((r) => r.employee.email.endsWith(DEMO_DOMAIN)).length;
 
   const activeOf = (t: string) => activeByType.find((c) => c.employmentType === t)?._count ?? 0;
 
@@ -139,7 +140,12 @@ export async function loadHrDashboard(dept: HrDept, f: HrDashboardFilters = {}, 
   return {
     asOf: ref,
     range,
-    demo: demoPeople > 0,
+    // Demo flags per figure: label a number "demo" only when it really contains seeded demo records.
+    demo: {
+      people: demoPeople > 0,
+      attendance: demoAttendance > 0,
+      attendanceOnly: attendance.length > 0 && demoAttendance === attendance.length,
+    },
     people: {
       total: activeByType.reduce((n, c) => n + c._count, 0),
       permanent: activeOf("PERMANENT"),

@@ -14,6 +14,7 @@ import {
   STAGE_LABEL,
   dayKey,
 } from "./hr-catalogue";
+import { holidayKeysFor } from "./hr-time";
 
 // §10 HR reports. Every report is built from live records with the same
 // filters; compensation and personal contact details are never included
@@ -48,6 +49,21 @@ function range(f: ReportFilters): Prisma.DateTimeFilter | undefined {
   if (!f.from && !f.to) return undefined;
   return { ...(f.from ? { gte: f.from } : {}), ...(f.to ? { lte: f.to } : {}) };
 }
+
+const DAY = 24 * 60 * 60 * 1000;
+const utcDay = (v: Date) => new Date(Date.UTC(v.getUTCFullYear(), v.getUTCMonth(), v.getUTCDate()));
+
+/** Attendance checks scan day records, so an open-ended filter defaults to the last 60 days. */
+function attendanceWindow(f: ReportFilters) {
+  const to = utcDay(f.to ?? new Date());
+  const from = utcDay(f.from ?? new Date(to.getTime() - 60 * DAY));
+  return { from, to };
+}
+
+const CORRECTION_SOURCE: Record<string, string> = {
+  import: "Excel import",
+  correction: "Employee request",
+};
 
 const empInclude = {
   position: { select: { title: true } },
@@ -298,6 +314,107 @@ export const REPORTS: ReportDef[] = [
             String(rs.length),
             workDays ? `${Math.round((present / workDays) * 100)}%` : "",
             ...Object.keys(ATTENDANCE_LABEL).map((s) => String(rs.filter((r) => r.status === s).length)),
+          ];
+        }),
+      };
+    },
+  },
+  {
+    key: "attendance-conflicts",
+    title: "Attendance Conflicts",
+    description:
+      "Days where attendance disagrees with approved leave or the holiday calendar, for HR review. Defaults to the last 60 days.",
+    async build(f) {
+      const { from, to } = attendanceWindow(f);
+      const records = await db.attendanceRecord.findMany({
+        where: { employee: empWhere(f), date: { gte: from, lte: to } },
+        include: { employee: { select: { code: true, name: true, employmentType: true, location: true } } },
+        orderBy: [{ date: "desc" }],
+      });
+      const leaves = await db.leaveRequest.findMany({
+        where: {
+          employeeId: { in: [...new Set(records.map((r) => r.employeeId))] },
+          status: "APPROVED",
+          startDate: { lte: to },
+          endDate: { gte: from },
+        },
+        select: { employeeId: true, startDate: true, endDate: true, days: true, leaveType: true },
+      });
+      const holidayCache = new Map<string, Promise<Set<string>>>();
+      const holidays = (type: EmploymentType, location: string) => {
+        const k = `${type}|${location}`;
+        if (!holidayCache.has(k)) holidayCache.set(k, holidayKeysFor(type, location, from, to));
+        return holidayCache.get(k)!;
+      };
+
+      const rows: string[][] = [];
+      for (const r of records) {
+        const leave = leaves.find((l) => l.employeeId === r.employeeId && l.startDate <= r.date && l.endDate >= r.date);
+        const halfDayLeave = !!leave && Number(leave.days) % 1 !== 0 && +leave.startDate === +leave.endDate;
+        const holiday = (await holidays(r.employee.employmentType, r.employee.location)).has(dayKey(r.date));
+        const issues: string[] = [];
+        if (leave && r.status === "PRESENT") issues.push(`Marked present on approved ${leave.leaveType} leave`);
+        if (leave && r.status === "HALF_DAY" && !halfDayLeave) issues.push(`Half day on approved ${leave.leaveType} leave`);
+        if (leave && r.status === "ABSENT") issues.push(`Absent on approved ${leave.leaveType} leave (should be On leave)`);
+        if (!leave && r.status === "ON_LEAVE") issues.push("On leave without an approved leave request");
+        if (holiday && r.status === "ABSENT") issues.push("Absent on a holiday");
+        if (!holiday && r.status === "HOLIDAY") issues.push("Holiday marked on a day not in the holiday calendar");
+        for (const issue of issues) {
+          rows.push([
+            d(r.date),
+            r.employee.code ?? "",
+            r.employee.name,
+            EMPLOYMENT_TYPE_LABEL[r.employee.employmentType],
+            ATTENDANCE_LABEL[r.status],
+            issue,
+          ]);
+        }
+      }
+      return { columns: ["Day", "Employee ID", "Name", "Type", "Recorded", "Issue"], rows };
+    },
+  },
+  {
+    key: "attendance-corrections",
+    title: "Attendance Corrections",
+    description: "Every change to a recorded day: old and new status, reason, how it was changed and who changed or approved it.",
+    async build(f) {
+      const events = await db.auditEvent.findMany({
+        where: { action: "HR_ATTENDANCE_CORRECTED", targetType: "Employee" },
+        orderBy: { createdAt: "desc" },
+        take: 5000,
+        include: { actor: { select: { name: true } } },
+      });
+      const lo = f.from ? dayKey(f.from) : null;
+      const hi = f.to ? dayKey(f.to) : null;
+      const inRange = events.filter((e) => {
+        const day = (e.detail as { date?: string } | null)?.date ?? "";
+        return (!lo || day >= lo) && (!hi || day <= hi);
+      });
+      const employees = await db.employee.findMany({
+        where: { ...empWhere(f), id: { in: [...new Set(inRange.map((e) => e.targetId ?? ""))] } },
+        select: { id: true, code: true, name: true, employmentType: true },
+      });
+      const byId = new Map(employees.map((e) => [e.id, e]));
+      const label = (s: unknown) => (typeof s === "string" && s in ATTENDANCE_LABEL ? ATTENDANCE_LABEL[s as keyof typeof ATTENDANCE_LABEL] : "Not recorded");
+      return {
+        columns: ["Day", "Employee ID", "Name", "Type", "From", "To", "Reason", "How", "Changed / approved by", "Changed on"],
+        rows: inRange.flatMap((e) => {
+          const emp = byId.get(e.targetId ?? "");
+          if (!emp) return [];
+          const det = (e.detail ?? {}) as { date?: string; from?: string | null; to?: string; reason?: string; source?: string };
+          return [
+            [
+              det.date ?? "",
+              emp.code ?? "",
+              emp.name,
+              EMPLOYMENT_TYPE_LABEL[emp.employmentType],
+              label(det.from),
+              label(det.to),
+              det.reason ?? "",
+              CORRECTION_SOURCE[det.source ?? ""] ?? "HR edit",
+              e.actor?.name ?? e.actorEmail ?? "",
+              d(e.createdAt),
+            ],
           ];
         }),
       };
