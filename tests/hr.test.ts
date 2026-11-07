@@ -93,7 +93,11 @@ describe("HR catalogue rules", () => {
       "Letters & Documents",
       "Attendance & Leave",
       "Holiday Calendar",
+      "KRAs & Performance",
+      "Policies & Compliance",
+      "Training & Learning",
       "Reports",
+      "Analytics",
       "Settings & Audit",
     ]);
     // Sent / awaiting / accepted / expired are only reachable through letters and the scan.
@@ -282,15 +286,15 @@ describe("HR end-to-end", () => {
       employeeId: emp.id,
       leaveType: "Casual",
       startDate: monday,
-      endDate: new Date(monday.getTime() + 6 * DAY), // Mon–Sun → 5 working days
+      endDate: new Date(monday.getTime() + 6 * DAY), // Mon–Sun → 6 working days (Saturday is a working day, only Sunday is off)
     });
-    expect(Number(req.days)).toBe(5);
+    expect(Number(req.days)).toBe(6);
     await expect(
       submitLeave(admin, { employeeId: emp.id, leaveType: "Casual", startDate: monday, endDate: monday }),
     ).rejects.toMatchObject({ status: 409 }); // overlap
     await decideLeave(admin, req.id, "APPROVE");
     const after = (await leaveBalance(emp.id)).rows.find((r) => r.type === "Casual");
-    expect(after?.used).toBe(5);
+    expect(after?.used).toBe(6);
   });
 
   it("records existing employee IDs: entered, edited, unique, audited, and skipped by the generator", async () => {
