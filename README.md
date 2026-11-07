@@ -24,6 +24,9 @@ The API listens on http://localhost:4000. The development seed creates admin@man
 - POST /api/auth/logout — revokes the current session.
 - GET /api/auth/session — returns the current signed-in user.
 - POST /api/auth/change-password — changes a password or completes an invitation password setup.
+- POST /api/auth/forgot-password — emails a 10-minute, single-use reset link. Always returns the same message, so it does not show whether an account exists.
+- POST /api/auth/reset-password/validate — says whether a reset link can still be used.
+- POST /api/auth/reset-password — sets the new password, uses up the link and signs the user out everywhere.
 - POST /api/users — creates a user and emails a one-time Supabase setup link. Super Admin only.
 - POST /api/users/invitation — resends a setup link. Super Admin only.
 - PATCH /api/users — enables or disables a user; disabling revokes their sessions.

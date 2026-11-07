@@ -238,7 +238,8 @@ export async function updateSupabaseUserPassword(userId: string, password: strin
       authorization: `Bearer ${secretKey}`,
       "content-type": "application/json",
     },
-    body: JSON.stringify({ password }),
+    // A reset link proves the email, so an invited user who never finished can sign in afterwards.
+    body: JSON.stringify({ password, email_confirm: true }),
     cache: "no-store",
   });
   if (!response.ok) {
