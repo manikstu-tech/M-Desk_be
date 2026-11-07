@@ -79,11 +79,11 @@ beforeEach(() => {
 });
 
 describe("attendance correction requests", () => {
-  it("employee requests; manager and HR are notified; no duplicate pending request for the day", async () => {
+  it("employee requests; HR is notified; no duplicate pending request for the day", async () => {
     state.records.set(key("e1", yesterday()), "ABSENT");
     await requestCorrection(as("u-asha"), { date: yesterday(), status: "PRESENT", reason: "Punch missed" });
     expect(state.corrections[0]).toMatchObject({ previousStatus: "ABSENT", requestedStatus: "PRESENT", status: "PENDING" });
-    expect(state.notified[0]).toEqual(["u-mgr", "u-hr"]);
+    expect(state.notified[0]).toEqual(["u-hr"]);
     await expect(requestCorrection(as("u-asha"), { date: yesterday(), status: "HALF_DAY", reason: "again" })).rejects.toThrow(/pending request/);
   });
 
@@ -96,15 +96,16 @@ describe("attendance correction requests", () => {
     await expect(requestCorrection(as("u-nobody"), { date: yesterday(), status: "PRESENT", reason: "x x" })).rejects.toThrow(/Only employees/);
   });
 
-  it("the reporting manager approves; the record is updated and the correction audited", async () => {
+  it("HR approves (the manager cannot); the record is updated and the correction audited", async () => {
     await requestCorrection(as("u-asha"), { date: yesterday(), status: "HALF_DAY", reason: "Left early" });
-    expect(await decideCorrection(as("u-mgr"), "c1", { action: "APPROVE" })).toBe("APPROVED");
+    await expect(decideCorrection(as("u-mgr"), "c1", { action: "APPROVE" })).rejects.toThrow(/Not found/);
+    expect(await decideCorrection(as("u-hr"), "c1", { action: "APPROVE" })).toBe("APPROVED");
     expect(state.records.get(key("e1", yesterday()))).toBe("HALF_DAY");
     expect(state.audits).toContain("HR_ATTENDANCE_CORRECTED");
     expect(state.notified.at(-1)).toEqual(["u-asha"]);
   });
 
-  it("only the manager or HR may decide, never the employee, and rejecting needs a reason", async () => {
+  it("only HR may decide, never the employee, and rejecting needs a reason", async () => {
     await requestCorrection(as("u-asha"), { date: yesterday(), status: "PRESENT", reason: "Punch missed" });
     await expect(decideCorrection(as("u-other"), "c1", { action: "APPROVE" })).rejects.toThrow(/Not found/);
     await expect(decideCorrection(as("u-asha"), "c1", { action: "APPROVE" })).rejects.toThrow(/Not found/);

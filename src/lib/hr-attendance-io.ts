@@ -5,6 +5,7 @@ import type { AuthSession } from "./authorize";
 import { db } from "./db";
 import { hrAudit, requireHr } from "./hr";
 import { dayKey } from "./hr-catalogue";
+import { parseMuster } from "./hr-muster";
 import { ApiError } from "./validation";
 
 // Attendance import / export (WF-HR-06, interim): HR uploads an Excel or CSV sheet,
@@ -109,45 +110,56 @@ export async function importAttendance(session: AuthSession, file: File): Promis
   const dept = await requireHr(session, Action.EDIT);
   const sheet = await readSheet(file);
 
-  // Find columns by header name so extra or reordered columns are fine.
-  const header = sheet.getRow(1);
-  const col: Partial<Record<"code" | "date" | "status" | "note", number>> = {};
-  header.eachCell((cell, n) => {
-    const h = cellText(cell.value).trim().toLowerCase();
-    if (["employee id", "employee code", "emp id", "code"].includes(h)) col.code = n;
-    else if (h === "date") col.date = n;
-    else if (h === "status") col.status = n;
-    else if (["note", "reason", "remarks"].includes(h)) col.note = n;
-  });
-  const missing = [!col.code && "Employee ID", !col.date && "Date", !col.status && "Status"].filter(Boolean);
-  if (missing.length) {
-    throw new ApiError(422, "VALIDATION", `Row 1 must have these column headings: ${missing.join(", ")}. Download the template to see the format.`);
-  }
-
   type Parsed = { row: number; code: string; date: Date; status: AttendanceStatus; note?: string };
   const parsed: Parsed[] = [];
   const errors: ImportRowError[] = [];
   const today = utcDay(new Date());
   let dataRows = 0;
 
-  for (let r = 2; r <= sheet.rowCount; r++) {
-    const row = sheet.getRow(r);
-    const code = cellText(row.getCell(col.code!).value).trim().toUpperCase();
-    const rawDate = row.getCell(col.date!).value;
-    const rawStatus = cellText(row.getCell(col.status!).value).trim();
-    const note = col.note ? cellText(row.getCell(col.note).value).trim().slice(0, 200) || undefined : undefined;
-    if (!code && !cellText(rawDate).trim() && !rawStatus) continue; // blank line
-    dataRows++;
-    if (dataRows > MAX_IMPORT_ROWS) {
-      throw new ApiError(422, "VALIDATION", `A file can have at most ${MAX_IMPORT_ROWS} rows. Split it and upload again.`);
+  // The current HR app's Muster report loads as it is; anything else uses the import template.
+  const muster = parseMuster(sheet);
+  if (muster) {
+    errors.push(...muster.errors);
+    dataRows = muster.rows.length + muster.errors.length;
+    for (const m of muster.rows) {
+      if (m.date > today) errors.push({ row: m.row, message: `${m.code} ${dayKey(m.date)} is in the future` });
+      else parsed.push({ row: m.row, code: m.code, date: m.date, status: m.status, note: m.note });
     }
-    const date = parseDate(rawDate);
-    const status = STATUS_ALIASES[rawStatus.toLowerCase()];
-    if (!code) errors.push({ row: r, message: "Employee ID is empty" });
-    if (!date) errors.push({ row: r, message: `Date "${cellText(rawDate)}" is not a valid date (use YYYY-MM-DD or DD-MM-YYYY)` });
-    else if (date > today) errors.push({ row: r, message: `${dayKey(date)} is in the future` });
-    if (!status) errors.push({ row: r, message: `Status "${rawStatus}" is not one of: Present, Absent, Half Day, On Leave, Holiday` });
-    if (code && date && date <= today && status) parsed.push({ row: r, code, date, status, note });
+  } else {
+    // Find columns by header name so extra or reordered columns are fine.
+    const header = sheet.getRow(1);
+    const col: Partial<Record<"code" | "date" | "status" | "note", number>> = {};
+    header.eachCell((cell, n) => {
+      const h = cellText(cell.value).trim().toLowerCase();
+      if (["employee id", "employee code", "emp id", "code"].includes(h)) col.code = n;
+      else if (h === "date") col.date = n;
+      else if (h === "status") col.status = n;
+      else if (["note", "reason", "remarks"].includes(h)) col.note = n;
+    });
+    const missing = [!col.code && "Employee ID", !col.date && "Date", !col.status && "Status"].filter(Boolean);
+    if (missing.length) {
+      throw new ApiError(422, "VALIDATION", `Row 1 must have these column headings: ${missing.join(", ")}. Download the template to see the format.`);
+    }
+
+    for (let r = 2; r <= sheet.rowCount; r++) {
+      const row = sheet.getRow(r);
+      const code = cellText(row.getCell(col.code!).value).trim().toUpperCase();
+      const rawDate = row.getCell(col.date!).value;
+      const rawStatus = cellText(row.getCell(col.status!).value).trim();
+      const note = col.note ? cellText(row.getCell(col.note).value).trim().slice(0, 200) || undefined : undefined;
+      if (!code && !cellText(rawDate).trim() && !rawStatus) continue; // blank line
+      dataRows++;
+      if (dataRows > MAX_IMPORT_ROWS) {
+        throw new ApiError(422, "VALIDATION", `A file can have at most ${MAX_IMPORT_ROWS} rows. Split it and upload again.`);
+      }
+      const date = parseDate(rawDate);
+      const status = STATUS_ALIASES[rawStatus.toLowerCase()];
+      if (!code) errors.push({ row: r, message: "Employee ID is empty" });
+      if (!date) errors.push({ row: r, message: `Date "${cellText(rawDate)}" is not a valid date (use YYYY-MM-DD or DD-MM-YYYY)` });
+      else if (date > today) errors.push({ row: r, message: `${dayKey(date)} is in the future` });
+      if (!status) errors.push({ row: r, message: `Status "${rawStatus}" is not one of: Present, Absent, Half Day, On Leave, Holiday` });
+      if (code && date && date <= today && status) parsed.push({ row: r, code, date, status, note });
+    }
   }
   if (dataRows === 0) throw new ApiError(422, "VALIDATION", "The file has no attendance rows under the heading row");
 
@@ -158,11 +170,14 @@ export async function importAttendance(session: AuthSession, file: File): Promis
 
   // Duplicates inside the file.
   const seen = new Map<string, number>();
+  const missingReported = new Set<string>();
   const rows: (Parsed & { employeeId: string })[] = [];
   for (const p of parsed) {
     const employeeId = idByCode.get(p.code);
     if (!employeeId) {
-      errors.push({ row: p.row, message: `No employee with ID ${p.code}` });
+      // One message per missing ID, not one per day.
+      if (!missingReported.has(p.code)) errors.push({ row: p.row, message: `No employee with ID ${p.code}` });
+      missingReported.add(p.code);
       continue;
     }
     const key = `${employeeId}|${dayKey(p.date)}`;
@@ -188,6 +203,7 @@ export async function importAttendance(session: AuthSession, file: File): Promis
     return prev && prev.status !== r.status;
   });
   for (const c of corrections) {
+    if (!c.note && muster) c.note = `Updated from Muster report${muster.period ? ` ${muster.period.from} to ${muster.period.to}` : ""}`;
     if (!c.note) {
       errors.push({ row: c.row, message: `${c.code} on ${dayKey(c.date)} is already recorded as ${STATUS_LABEL[before.get(`${c.employeeId}|${dayKey(c.date)}`)!.status]}; add a Note with the reason to change it` });
     }

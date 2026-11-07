@@ -81,7 +81,6 @@ export const EMPLOYMENT_TYPE_LABEL: Record<EmploymentType, string> = {
   CONTRACT: "Contract",
 };
 
-const CODE_PREFIX: Record<EmploymentType, string> = { INTERN: "INT", PERMANENT: "EMP", CONTRACT: "CON" };
 
 export const MOVE_KINDS = ["PROMOTION", "TRANSFER", "ROLE_CHANGE"] as const;
 export type MoveKind = (typeof MOVE_KINDS)[number];
@@ -99,8 +98,9 @@ export function canMoveEmployee(stage: EmployeeStage): boolean {
   return !CLOSED_STAGES.includes(stage);
 }
 
-export function employeeCode(type: EmploymentType, seq: number): string {
-  return `${CODE_PREFIX[type]}-${String(seq).padStart(4, "0")}`;
+/** Company ID format (same as the current HR app): EA + 5 digits, for every employment type. */
+export function employeeCode(_type: EmploymentType, seq: number): string {
+  return `EA${String(seq).padStart(5, "0")}`;
 }
 
 export const STAGE_LABEL: Record<EmployeeStage, string> = {
@@ -494,15 +494,21 @@ export function dayKey(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
 
-/** Working days in [start, end], skipping weekends and the given holiday dates. */
+/** Weekly off days (0 = Sunday). Manikstu works Monday to Saturday. */
+export const WEEKLY_OFF_DAYS: readonly number[] = [0];
+
+export function isWeeklyOff(d: Date): boolean {
+  return WEEKLY_OFF_DAYS.includes(d.getUTCDay());
+}
+
+/** Working days in [start, end], skipping weekly offs and the given holiday dates. */
 export function countLeaveDays(start: Date, end: Date, holidayKeys: Set<string>, halfDay = false): number {
   if (end < start) return 0;
   let days = 0;
   const d = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate()));
   const last = Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate());
   while (d.getTime() <= last) {
-    const dow = d.getUTCDay();
-    if (dow !== 0 && dow !== 6 && !holidayKeys.has(dayKey(d))) days++;
+    if (!isWeeklyOff(d) && !holidayKeys.has(dayKey(d))) days++;
     d.setUTCDate(d.getUTCDate() + 1);
   }
   return halfDay && days === 1 ? 0.5 : days;

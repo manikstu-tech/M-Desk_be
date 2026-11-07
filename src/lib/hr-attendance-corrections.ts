@@ -6,8 +6,9 @@ import { ATTENDANCE_LABEL, dayKey } from "./hr-catalogue";
 import { notifyUsers } from "./notify";
 import { ApiError } from "./validation";
 
-// WF-ATT-05: an employee asks to fix one day's attendance; their reporting manager
-// or HR (EDIT) approves or rejects; approval writes the record as an audited correction.
+// WF-ATT-05: an employee asks to fix one day's attendance; HR (EDIT) approves or
+// rejects (company decision: HR only, not the manager); approval writes the record
+// as an audited correction.
 
 const DAY = 24 * 60 * 60 * 1000;
 export const CORRECTION_WINDOW_DAYS = 60;
@@ -54,7 +55,7 @@ export async function requestCorrection(session: AuthSession, input: { date: Dat
   }
 
   const dept = await hrDept();
-  const approvers = [...(emp.managerId ? [emp.managerId] : []), ...(await hrAdminIds())].filter((id) => id !== session.user.id);
+  const approvers = (await hrAdminIds()).filter((id) => id !== session.user.id);
   return db.$transaction(async (tx) => {
     const c = await tx.attendanceCorrection.create({
       data: {
@@ -81,14 +82,13 @@ export async function requestCorrection(session: AuthSession, input: { date: Dat
   });
 }
 
-/** Can this user decide this employee's requests? Their reporting manager, or HR with EDIT. Never their own. */
-async function canDecide(session: AuthSession, employee: { managerId: string | null; userId?: string | null }) {
+/** Can this user decide this employee's requests? HR with EDIT (or Super Admin). Never their own. */
+async function canDecide(session: AuthSession, employee: { userId?: string | null }) {
   if (employee.userId && employee.userId === session.user.id) return false;
-  if (employee.managerId === session.user.id) return true;
-  return hrCan(session, Action.EDIT);
+  return session.user.role.name === RoleName.SUPER_ADMIN || hrCan(session, Action.EDIT);
 }
 
-/** Own requests, plus the requests this user may decide. */
+/** Own requests, plus the requests this user may decide (HR only). */
 export async function listCorrections(session: AuthSession) {
   const isHr = session.user.role.name === RoleName.SUPER_ADMIN || (await hrCan(session, Action.EDIT));
   const own = await db.employee.findUnique({ where: { userId: session.user.id }, select: { id: true } });
@@ -96,16 +96,14 @@ export async function listCorrections(session: AuthSession) {
     own
       ? db.attendanceCorrection.findMany({ where: { employeeId: own.id }, orderBy: { createdAt: "desc" }, take: 20, select: row })
       : Promise.resolve([]),
-    db.attendanceCorrection.findMany({
-      where: {
-        status: "PENDING",
-        ...(own ? { employeeId: { not: own.id } } : {}),
-        ...(isHr ? {} : { employee: { managerId: session.user.id } }),
-      },
-      orderBy: { createdAt: "asc" },
-      take: 100,
-      select: row,
-    }),
+    isHr
+      ? db.attendanceCorrection.findMany({
+          where: { status: "PENDING", ...(own ? { employeeId: { not: own.id } } : {}) },
+          orderBy: { createdAt: "asc" },
+          take: 100,
+          select: row,
+        })
+      : Promise.resolve([]),
   ]);
   return { isEmployee: !!own, mine, toDecide };
 }

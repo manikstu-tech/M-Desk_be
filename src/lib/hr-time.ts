@@ -4,7 +4,7 @@ import type { Tx } from "./audit";
 import type { AuthSession } from "./authorize";
 import { notifyUsers } from "./notify";
 import { ApiError } from "./validation";
-import { hrAudit, hrCan, hrDept, requireHr } from "./hr";
+import { hrAdminIds, hrAudit, hrCan, hrDept, requireHr } from "./hr";
 import { countLeaveDays, dayKey, hrHref, parseAllowances, type Allowance } from "./hr-catalogue";
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -272,26 +272,48 @@ export async function submitLeave(
       targetId: req.id,
       detail: { employeeId: emp.id, leaveType: req.leaveType, days },
     });
-    if (emp.managerId) {
-      await notifyUsers(tx, [emp.managerId], {
-        title: `Leave request from ${emp.name}`,
-        body: `${input.leaveType}, ${days} day(s) from ${dayKey(start)}`,
-        link: "/my-hr#approvals",
-      });
-    }
+    // Step 1 goes to the reporting manager; with no manager it goes straight to HR.
+    const firstApprovers = emp.managerId ? [emp.managerId] : await hrAdminIds();
+    await notifyUsers(tx, firstApprovers.filter((u) => u !== session.user.id), {
+      title: `Leave request from ${emp.name}`,
+      body: `${input.leaveType}, ${days} day(s) from ${dayKey(start)}`,
+      link: "/my-hr#approvals",
+    });
     return req;
   });
 }
 
 /** Line manager or an HR approver decides; the requester or HR may cancel. */
-/** Pending leave this user may decide: their own team as reporting manager, or everyone with HR APPROVE. Never their own. */
+/** Can this user act as HR on leave (step 2)? */
+async function isLeaveHr(session: AuthSession) {
+  return session.user.role.name === RoleName.SUPER_ADMIN || hrCan(session, Action.APPROVE);
+}
+
+/** Which step a pending request is waiting for: the reporting manager first, then HR. */
+export function leaveStage(req: { managerApprovedAt: Date | null; employee: { managerId: string | null } }): "MANAGER" | "HR" {
+  return req.employee.managerId && !req.managerApprovedAt ? "MANAGER" : "HR";
+}
+
+/**
+ * Pending leave this user may decide now: step 1 for their own team as reporting
+ * manager, step 2 (after the manager, or with no manager) for HR. Never their own.
+ */
 export async function leaveToDecide(session: AuthSession) {
-  const isHr = session.user.role.name === RoleName.SUPER_ADMIN || (await hrCan(session, Action.APPROVE));
-  return db.leaveRequest.findMany({
+  const isHr = await isLeaveHr(session);
+  const notOwn = { OR: [{ userId: null }, { userId: { not: session.user.id } }] };
+  const rows = await db.leaveRequest.findMany({
     where: {
       status: "PENDING",
       // OR keeps employees without a login (userId null), which a plain NOT would drop.
-      employee: { ...(isHr ? {} : { managerId: session.user.id }), OR: [{ userId: null }, { userId: { not: session.user.id } }] },
+      OR: [
+        { managerApprovedAt: null, employee: { managerId: session.user.id, ...notOwn } },
+        ...(isHr
+          ? [
+              { managerApprovedAt: { not: null }, employee: notOwn },
+              { employee: { managerId: null, ...notOwn } },
+            ]
+          : []),
+      ],
     },
     orderBy: { startDate: "asc" },
     take: 100,
@@ -303,9 +325,11 @@ export async function leaveToDecide(session: AuthSession) {
       days: true,
       reason: true,
       createdAt: true,
-      employee: { select: { id: true, code: true, name: true } },
+      managerApprovedAt: true,
+      employee: { select: { id: true, code: true, name: true, managerId: true, manager: { select: { name: true } } } },
     },
   });
+  return rows.map((r) => ({ ...r, stage: leaveStage(r) }));
 }
 
 export async function decideLeave(
@@ -325,13 +349,45 @@ export async function decideLeave(
   } else {
     if (req.status !== "PENDING") throw new ApiError(409, "CONFLICT", "This request has already been decided");
     if (emp.userId === session.user.id) throw new ApiError(409, "CONFLICT", "You cannot decide your own leave");
-    deptId = emp.managerId === session.user.id && !(await hrCan(session, Action.APPROVE))
-      ? (await hrDept()).id
-      : (await requireHr(session, Action.APPROVE)).id;
     if (action === "REJECT" && !comment) throw new ApiError(422, "VALIDATION", "Give a reason for rejecting");
+    const hr = await isLeaveHr(session);
+    if (leaveStage(req) === "MANAGER") {
+      if (emp.managerId !== session.user.id) {
+        throw new ApiError(409, "CONFLICT", "Waiting for the reporting manager to approve first");
+      }
+      // Step 1: the manager approves and it moves to HR. A manager who is also HR completes both steps.
+      if (action === "APPROVE" && !hr) {
+        const [dept, hrIds] = await Promise.all([hrDept(), hrAdminIds()]);
+        await db.$transaction(async (tx) => {
+          await tx.leaveRequest.update({
+            where: { id },
+            data: { managerApprovedById: session.user.id, managerApprovedAt: new Date(), comment: comment ?? req.comment },
+          });
+          await hrAudit(tx, session, dept.id, {
+            action: "HR_LEAVE_MANAGER_APPROVED",
+            targetType: "LeaveRequest",
+            targetId: id,
+            detail: { employeeId: emp.id, days: Number(req.days), leaveType: req.leaveType },
+          });
+          const msg = { body: `${req.leaveType}, ${Number(req.days)} day(s) from ${dayKey(req.startDate)}` };
+          await notifyUsers(tx, hrIds.filter((u) => u !== session.user.id), {
+            ...msg,
+            title: `Leave for HR approval: ${emp.name}`,
+            link: "/my-hr#approvals",
+          });
+          if (emp.userId) await notifyUsers(tx, [emp.userId], { ...msg, title: "Leave approved by your manager, now with HR" });
+        });
+        return;
+      }
+      deptId = hr ? (await requireHr(session, Action.APPROVE)).id : (await hrDept()).id;
+    } else {
+      if (!hr) throw new ApiError(403, "FORBIDDEN", "HR approves this step");
+      deptId = (await requireHr(session, Action.APPROVE)).id;
+    }
   }
 
   const status = action === "APPROVE" ? "APPROVED" : action === "REJECT" ? "REJECTED" : "CANCELLED";
+  const managerStepNow = action === "APPROVE" && leaveStage(req) === "MANAGER";
   await db.$transaction(async (tx) => {
     await tx.leaveRequest.update({
       where: { id },
@@ -339,6 +395,7 @@ export async function decideLeave(
         status,
         comment: comment ?? req.comment,
         ...(action === "CANCEL" ? {} : { approverId: session.user.id, decidedAt: new Date() }),
+        ...(managerStepNow ? { managerApprovedById: session.user.id, managerApprovedAt: new Date() } : {}),
       },
     });
     await hrAudit(tx, session, deptId, {

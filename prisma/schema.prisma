@@ -715,6 +715,9 @@ model LeaveRequest {
   approverId  String?
   decidedAt   DateTime?
   comment     String?
+  /// Step 1 of 2 (company rule: manager first, then HR). Status stays PENDING until HR decides.
+  managerApprovedById String?
+  managerApprovedAt   DateTime?
   createdById String
   employee    Employee     @relation(fields: [employeeId], references: [id])
   policy      LeavePolicy? @relation(fields: [policyId], references: [id])

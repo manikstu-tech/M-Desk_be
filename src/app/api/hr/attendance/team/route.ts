@@ -2,7 +2,7 @@ import { Action, type AttendanceStatus } from "@prisma/client";
 import { requireSession } from "@/lib/authorize";
 import { db } from "@/lib/db";
 import { hrCan, requireHr } from "@/lib/hr";
-import { dayKey } from "@/lib/hr-catalogue";
+import { dayKey, isWeeklyOff } from "@/lib/hr-catalogue";
 import { holidayKeysFor } from "@/lib/hr-time";
 import { errorResponse, ok } from "@/lib/validation";
 
@@ -62,7 +62,7 @@ export async function GET(req: Request) {
       if (!holidayCache.has(k)) holidayCache.set(k, holidayKeysFor(type, location, date, date));
       return holidayCache.get(k)!.then((keys) => keys.has(dayKey(date)));
     };
-    const weekend = date.getUTCDay() === 0 || date.getUTCDay() === 6;
+    const weekend = isWeeklyOff(date);
 
     const rows = await Promise.all(
       employees.map(async (e) => {

@@ -111,3 +111,50 @@ describe("attendance import", () => {
     expect(r).toMatchObject({ saved: true, rows: 2 });
   });
 });
+
+describe("Muster report from the current HR app", () => {
+  const musterFile = async () => {
+    const { readFileSync } = await import("node:fs");
+    return new File([readFileSync("tests/fixtures/muster-2026-11.xlsx")], "Attendance_Report_2026-11-01_to_2026-11-30.xlsx");
+  };
+
+  it("lists every missing employee once, not once per day", async () => {
+    const r = await importAttendance(session, await musterFile());
+    expect(r.saved).toBe(false);
+    if (r.saved) return;
+    // 25 employees in the file; the mock only knows EMP-0001 and INT-0002.
+    expect(r.errors).toHaveLength(25);
+    expect(r.errors[0].message).toBe("No employee with ID EA00002");
+    expect(upserts).toHaveLength(0);
+  });
+
+  it("saves P, A and leave codes; rest days (R) and blank future days are skipped", async () => {
+    const { db } = await import("@/lib/db");
+    const codes = [
+      "EA00002", "EA00003", "EA00004", "EA00005", "EA00006", "EA00008", "EA00011", "EA00015", "EA00029", "EA00062", "EA00084", "EA00112", "EA00113",
+      "EA00114", "EA00128", "EA00136", "EA00139", "EA00145", "EA00146", "EA00148", "EA00149", "EA00150", "EA00151", "EA00152", "EA00155",
+    ];
+    (db.employee.findMany as ReturnType<typeof vi.fn>).mockResolvedValueOnce(codes.map((c) => ({ id: `id-${c}`, code: c, name: c })));
+    const r = await importAttendance(session, await musterFile());
+    // 67 Present + 73 Absent + 10 leave (ML / AL); the 25 R cells are Sunday rest days with no record.
+    expect(r).toEqual({ saved: true, rows: 150, dates: 6, employees: 25, corrections: 0 });
+    const ramdhan = (upserts as { where: { employeeId_date: { employeeId: string; date: Date } }; create: { status: string; note?: string } }[]).filter(
+      (u) => u.where.employeeId_date.employeeId === "id-EA00114",
+    );
+    expect(ramdhan.map((u) => `${u.where.employeeId_date.date.toISOString().slice(8, 10)} ${u.create.status}`)).toEqual([
+      "02 PRESENT", "03 ON_LEAVE", "04 PRESENT", "05 PRESENT", "06 PRESENT", "07 ABSENT",
+    ]);
+    expect(ramdhan[1].create.note).toBe("Muster: leave (ML)");
+  });
+
+  it("a day already recorded differently is changed with an automatic note and audited as a correction", async () => {
+    const { db } = await import("@/lib/db");
+    (db.employee.findMany as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+      ["EA00002", "EA00003", "EA00004", "EA00005", "EA00006", "EA00008", "EA00011", "EA00015", "EA00029", "EA00062", "EA00084", "EA00112", "EA00113", "EA00114", "EA00128", "EA00136", "EA00139", "EA00145", "EA00146", "EA00148", "EA00149", "EA00150", "EA00151", "EA00152", "EA00155"].map((c) => ({ id: `id-${c}`, code: c, name: c })),
+    );
+    existing = [{ employeeId: "id-EA00004", date: new Date("2026-11-02T00:00:00Z"), status: "ABSENT", note: null }];
+    const r = await importAttendance(session, await musterFile());
+    expect(r).toMatchObject({ saved: true, corrections: 1 });
+    expect(audits.map((a) => a.action)).toContain("HR_ATTENDANCE_CORRECTED");
+  });
+});
