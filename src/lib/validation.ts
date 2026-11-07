@@ -21,6 +21,29 @@ export const setPasswordFromSupabaseInviteSchema = z.object({
   newPassword: z.string().min(8, "Password must be at least 8 characters"),
 });
 
+export const forgotPasswordSchema = z.object({
+  email: z.string().trim().toLowerCase().max(254).email("Enter a valid email address"),
+});
+
+export const resetTokenSchema = z.object({
+  token: z.string().regex(/^[a-f0-9]{64}$/, "This password reset link is invalid"),
+});
+
+// Same rule the password screens show. bcrypt ignores anything past 72 bytes.
+export const resetPasswordSchema = resetTokenSchema
+  .extend({
+    newPassword: z
+      .string()
+      .min(8, "Password must be at least 8 characters")
+      .regex(/[A-Za-z]/, "Password must include a letter")
+      .regex(/[0-9]/, "Password must include a digit")
+      .refine((p) => Buffer.byteLength(p) <= 72, "Password must be at most 72 bytes"),
+    confirmPassword: z.string().optional(),
+  })
+  .refine((v) => v.confirmPassword === undefined || v.confirmPassword === v.newPassword, {
+    message: "Passwords do not match",
+  });
+
 export const resendInviteSchema = z.object({
   userId: z.string().min(1),
 });

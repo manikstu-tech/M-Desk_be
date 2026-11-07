@@ -10,6 +10,9 @@ const API_ROOT = path.join(__dirname, "..", "src", "app", "api");
 const ALLOWLIST = new Set([
   "auth/login/route.ts",
   "auth/change-password/route.ts",
+  "auth/forgot-password/route.ts",
+  "auth/reset-password/route.ts",
+  "auth/reset-password/validate/route.ts",
   "health/route.ts",
   "health/ready/route.ts",
 ]);

@@ -1,5 +1,6 @@
 import nodemailer from "nodemailer";
 import { ApiError } from "@/lib/validation";
+import { buildPasswordResetEmail, type PasswordResetEmailInput } from "@/lib/password-reset-email";
 import { buildPasswordSetupEmail, type PasswordSetupEmailInput } from "@/lib/password-setup-email";
 
 function getSmtpConfig() {
@@ -57,6 +58,14 @@ export async function sendPasswordSetupEmail(input: PasswordSetupEmailInput) {
   await smtpTransport(config).sendMail({
     from: config.from,
     ...buildPasswordSetupEmail(input),
+  });
+}
+
+export async function sendPasswordResetEmail(input: PasswordResetEmailInput) {
+  const config = getSmtpConfig();
+  await smtpTransport(config).sendMail({
+    from: config.from,
+    ...buildPasswordResetEmail(input),
   });
 }
 
